@@ -31,8 +31,16 @@ class WikipediaStreamer:
             name="wikipedia-edits",
             value_serializer="json",
         )
+
+        # New topic for only 'edit' events:
+        self.edit_topic = self.app.topic(
+            name="wikipedia-edits-only",
+            value_serializer="json",
+        )
+
         print(f"Connected to Kafka broker at {KAFKA_BROKER}")
         print(f"Producing to topic: {self.topic.name}")
+        print(f"Producing EDIT events to topic: {self.edit_topic.name}")
 
     def publish_to_kafka(self, change_event: dict) -> bool:
         """
@@ -63,6 +71,33 @@ class WikipediaStreamer:
         except Exception as e:
             print(f"Error publishing to Kafka: {e}")
             return False
+        
+    def publish_to_edit_topic(self, change_event: dict) -> bool:
+        """
+        Publish a Wikipedia change event to the 'wikipedia-only-edits' Kafka topic.
+        
+        Args:
+            change_event: Dictionary containing the change event data
+            
+        Returns:
+            True if published successfully, False otherwise
+        """
+        try:
+            event_id = str(change_event.get('id', ''))
+            
+            # Serialize the event using the edit_topic's serializer
+            serialized = self.edit_topic.serialize(key=event_id, value=change_event)
+            
+            with self.app.get_producer() as producer:
+                producer.produce(
+                    topic=self.edit_topic.name,
+                    key=serialized.key,
+                    value=serialized.value
+                )
+            return True
+        except Exception as e:
+            print(f"Error publishing to edit-only topic: {e}")
+            return False
 
     def process_change(self, change_event: dict) -> None:
         """
@@ -81,17 +116,22 @@ class WikipediaStreamer:
         # Print the change
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [{event_type}] {user} edited '{title}' on {wiki}")
         
-        # Publish to Kafka
+        # Publishing ALL events to Kafka
         if self.publish_to_kafka(change_event):
             print(f"  ✓ Published to Kafka (ID: {change_event.get('id')})")
 
+        # Conditionally publish 'edit' events to the new topic
+        if event_type == 'edit':
+            if self.publish_to_edit_topic(change_event):
+                print(f"  ✓ Published to Edit-Only Topic (ID: {change_event.get('id')})")
+  
     def run(self):
         """
         Connect to Wikipedia SSE stream and continuously process events.
         """
         print(f"Connecting to Wikipedia SSE stream: {WIKIPEDIA_SSE_URL}")
         print("Press Ctrl+C to stop\n")
-        
+
         try:
             # Set up headers with proper User-Agent (required by Wikimedia)
             headers = {
